@@ -128,6 +128,8 @@ func (c *Client) RequestPeers(e Event) (*Peers, error) {
 		addrs = append(addrs, PeerAddress(addr))
 	}
 
+	c.trackerId = trackerResponse.TrackerId
+
 	return &Peers{
 		RetryInterval: retryInterval,
 		Addrs:         addrs,
