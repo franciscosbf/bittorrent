@@ -144,13 +144,11 @@ func Parse(file []byte) (*Torrent, error) {
 	}
 	infoHash := sha1.Sum(rawInfo.Bytes())
 
-	torrent := &Torrent{
+	return &Torrent{
 		Announce:    (*TrackerUrl)(announce),
 		PieceLength: pieceLength,
 		Pieces:      pieces,
 		Files:       files,
 		InfoHash:    InfoHash(infoHash),
-	}
-
-	return torrent, nil
+	}, nil
 }
