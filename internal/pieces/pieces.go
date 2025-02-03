@@ -5,7 +5,10 @@ import (
 	"sync"
 )
 
-var ErrInvalidBitfield = errors.New("invalid bitfield position")
+var (
+	ErrInvalidBitfield = errors.New("invalid bitfield")
+	ErrInvalidPosition = errors.New("invalid bitfield position")
+)
 
 type Bitfield struct {
 	m           sync.RWMutex
@@ -51,7 +54,7 @@ func (b *Bitfield) Mark(index uint32) error {
 	defer b.m.Unlock()
 
 	if index >= b.numPieces {
-		return ErrInvalidBitfield
+		return ErrInvalidPosition
 	}
 
 	chunk := uint32(len(b.bts)) / index
