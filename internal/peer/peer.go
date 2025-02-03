@@ -283,9 +283,9 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				binary.Decode(buff[8:], binary.BigEndian, &length)
 
 				if mt == requestMsg {
-					eh.RequestedBlock(c, index, begin, length)
+					go eh.RequestedBlock(c, index, begin, length)
 				} else {
-					eh.CancelledBlock(c, index, begin, length)
+					go eh.CancelledBlock(c, index, begin, length)
 				}
 			case pieceMsg:
 				if _, err := c.conn.Read(buff); err != nil {
@@ -295,9 +295,9 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				var index, begin uint32
 				binary.Decode(buff[:4], binary.BigEndian, &index)
 				binary.Decode(buff[4:8], binary.BigEndian, &begin)
-				block := buff[8:index]
+				block := append(make([]byte, lengthPrefix-8), buff[8:]...)
 
-				eh.ReceivedBlock(c, index, begin, block)
+				go eh.ReceivedBlock(c, index, begin, block)
 			case portMsg:
 			default:
 				return
