@@ -54,7 +54,7 @@ func (p Piece) String() string {
 
 type File struct {
 	Path   string
-	Length uint64
+	Length uint32
 }
 
 func (f File) String() string {
@@ -63,7 +63,7 @@ func (f File) String() string {
 
 type Torrent struct {
 	Announce    *TrackerUrl
-	PieceLength uint64
+	PieceLength uint32
 	Pieces      []Piece
 	Files       []File
 	InfoHash
@@ -78,12 +78,12 @@ func Parse(file []byte) (*Torrent, error) {
 	var torrentFile struct {
 		Announce string `bencode:"announce"`
 		Info     struct {
-			PieceLength uint64 `bencode:"piece length"`
+			PieceLength uint32 `bencode:"piece length"`
 			Pieces      string `bencode:"pieces"`
 			Name        string `bencode:"name"`
-			Length      uint64 `bencode:"length,omitempty"`
+			Length      uint32 `bencode:"length,omitempty"`
 			Files       []struct {
-				Length uint64   `bencode:"length"`
+				Length uint32   `bencode:"length"`
 				Path   []string `bencode:"path"`
 			} `bencode:"files,"`
 		} `bencode:"info"`

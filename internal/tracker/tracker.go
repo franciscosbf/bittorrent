@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/franciscosbf/bittorrent/internal/peer"
+	"github.com/franciscosbf/bittorrent/internal/id"
 	"github.com/franciscosbf/bittorrent/internal/stats"
 	"github.com/franciscosbf/bittorrent/internal/torrent"
 	"github.com/imroc/req/v3"
@@ -56,15 +56,15 @@ func (p *Peers) String() string {
 type Client struct {
 	tu        *torrent.TrackerUrl
 	hc        *req.Client
-	pi        peer.Id
+	pi        id.Peer
 	ih        torrent.InfoHash
 	sd        *stats.Download
 	trackerId string
 }
 
 const (
-	fakePort       uint16        = 6881
-	requestTimeout time.Duration = 4 * time.Second
+	fakePort       uint16 = 6881
+	requestTimeout        = 4 * time.Second
 )
 
 func (c *Client) RequestPeers(e Event) (*Peers, error) {
@@ -136,7 +136,12 @@ func (c *Client) RequestPeers(e Event) (*Peers, error) {
 	}, nil
 }
 
-func New(tu *torrent.TrackerUrl, pi peer.Id, ih torrent.InfoHash, sd *stats.Download) *Client {
+func New(
+	tu *torrent.TrackerUrl,
+	pi id.Peer,
+	ih torrent.InfoHash,
+	sd *stats.Download,
+) *Client {
 	hc := req.C().SetTimeout(requestTimeout)
 
 	return &Client{
