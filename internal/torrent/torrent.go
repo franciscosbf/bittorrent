@@ -1,10 +1,11 @@
 package torrent
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"path/filepath"
 
@@ -65,28 +66,29 @@ type Torrent struct {
 	PieceLength uint64
 	Pieces      []Piece
 	Files       []File
+	InfoHash
 }
 
 func (t *Torrent) String() string {
-	return fmt.Sprintf("{Announce: %v, PieceLength: %v, Pieces: %v, Files: %v}",
-		t.Announce, t.PieceLength, t.Pieces, t.Files)
+	return fmt.Sprintf("{Announce: %v, PieceLength: %v, Pieces: %v, Files: %v, InfoHash: %v}",
+		t.Announce, t.PieceLength, t.Pieces, t.Files, t.InfoHash)
 }
 
-func Parse(file io.Reader) (*Torrent, error) {
+func Parse(file []byte) (*Torrent, error) {
 	var torrentFile struct {
 		Announce string `bencode:"announce"`
 		Info     struct {
 			PieceLength uint64 `bencode:"piece length"`
 			Pieces      string `bencode:"pieces"`
 			Name        string `bencode:"name"`
-			Length      uint64 `bencode:"length"`
+			Length      uint64 `bencode:"length,omitempty"`
 			Files       []struct {
 				Length uint64   `bencode:"length"`
 				Path   []string `bencode:"path"`
-			} `bencode:"files"`
+			} `bencode:"files,"`
 		} `bencode:"info"`
 	}
-	if err := bencode.Unmarshal(file, &torrentFile); err != nil {
+	if err := bencode.Unmarshal(bytes.NewReader(file), &torrentFile); err != nil {
 		return nil, ErrParseFailed
 	}
 
@@ -131,11 +133,23 @@ func Parse(file io.Reader) (*Torrent, error) {
 		}
 	}
 
+	rawTorrentFile, err := bencode.Decode(bytes.NewReader(file))
+	if err != nil {
+		return nil, ErrParseFailed
+	}
+	rawInfo := bytes.NewBuffer([]byte{})
+	if err := bencode.Marshal(rawInfo, rawTorrentFile.(map[string]any)["info"]); err != nil {
+		fmt.Println(err)
+		return nil, ErrParseFailed
+	}
+	infoHash := sha1.Sum(rawInfo.Bytes())
+
 	torrent := &Torrent{
 		Announce:    (*TrackerUrl)(announce),
 		PieceLength: pieceLength,
 		Pieces:      pieces,
 		Files:       files,
+		InfoHash:    InfoHash(infoHash),
 	}
 
 	return torrent, nil
