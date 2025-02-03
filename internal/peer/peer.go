@@ -377,9 +377,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) HasPiece(index uint32) bool {
-	marked, _ := c.b.Marked(index)
-
-	return marked
+	return c.b.Marked(index)
 }
 
 func Connect(
