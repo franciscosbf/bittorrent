@@ -21,10 +21,7 @@ func (b *Bitfield) Raw() []byte {
 	b.m.RLock()
 	defer b.m.RUnlock()
 
-	bts := make([]byte, len(b.bts))
-	copy(bts, b.bts)
-
-	return bts
+	return append(make([]byte, len(b.bts)), b.bts...)
 }
 
 func (b *Bitfield) Overwrite(bts []byte) error {
