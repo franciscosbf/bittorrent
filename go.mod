@@ -3,8 +3,11 @@ module github.com/franciscosbf/bittorrent
 go 1.23.5
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/imroc/req/v3 v3.49.1
 	github.com/jackpal/bencode-go v1.0.2
+	golang.org/x/exp v0.0.0-20241215155358-4a5509556b9e
+	k8s.io/utils v0.0.0-20241210054802-24370beab758
 )
 
 require (
@@ -14,6 +17,7 @@ require (
 	github.com/google/pprof v0.0.0-20241210010833-40e02aabc2ad // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/onsi/ginkgo/v2 v2.22.0 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
@@ -21,7 +25,6 @@ require (
 	github.com/refraction-networking/utls v1.6.7 // indirect
 	go.uber.org/mock v0.5.0 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/exp v0.0.0-20241215155358-4a5509556b9e // indirect
 	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
