@@ -20,6 +20,7 @@ var (
 	ErrTempFileCreationFailed = errors.New("failed to create temporary file")
 	ErrReadTempFileFailed     = errors.New("failed to read temporary file")
 	ErrWriteTempFileFailed    = errors.New("failed to write temporary file")
+	ErrTempFileClosed         = errors.New("temporary file is closed")
 )
 
 type ErrFinalFileFailed struct {
@@ -139,7 +140,7 @@ func (h *Handler) Close() {
 
 func (h *Handler) WriteFilesAndClose(location string) error {
 	if h.tempFile == nil {
-		return nil
+		return ErrTempFileClosed
 	}
 
 	defer h.close()
