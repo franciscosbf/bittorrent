@@ -100,19 +100,18 @@ func (h *Handler) ReadBlock(index, begin, length uint32) ([]byte, error) {
 	low := begin
 	high := length + 1
 
-	if piece, ok := h.piecesCache.Get(index); ok {
-		return piece[low:high], nil
+	piece, ok := h.piecesCache.Get(index)
+	if !ok {
+		piece = make([]byte, h.pieceSize)
+
+		if _, err := h.tempFile.ReadAt(piece, pieceStartPos); err != nil {
+			return nil, ErrReadTempFileFailed
+		}
+
+		h.piecesCache.Add(index, piece)
 	}
 
-	piece := make([]byte, h.pieceSize)
-
-	if _, err := h.tempFile.ReadAt(piece, pieceStartPos); err != nil {
-		return nil, ErrReadTempFileFailed
-	}
-
-	h.piecesCache.Add(index, piece)
-
-	return piece[low:high], nil
+	return append(make([]byte, length), piece[low:high]...), nil
 }
 
 func (h *Handler) WritePiece(index uint32, piece []byte) error {
@@ -125,7 +124,7 @@ func (h *Handler) WritePiece(index uint32, piece []byte) error {
 		return ErrWriteTempFileFailed
 	}
 
-	h.piecesCache.Add(index, piece)
+	h.piecesCache.Add(index, append(make([]byte, len(piece)), piece...))
 
 	return nil
 }
