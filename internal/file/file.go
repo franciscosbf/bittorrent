@@ -9,7 +9,7 @@ import (
 
 	"github.com/franciscosbf/bittorrent/internal/torrent"
 	"github.com/google/uuid"
-	"k8s.io/utils/lru"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 const piecesCacheSize = 50
@@ -77,7 +77,7 @@ type Handler struct {
 	tempFileSize int64
 	tempFile     *os.File
 	pieceSize    uint32
-	piecesCache  *lru.Cache
+	piecesCache  *lru.Cache[uint32, []byte]
 	files        []torrent.File
 }
 
@@ -92,7 +92,7 @@ func (h *Handler) ReadBlock(index, begin, length uint32) ([]byte, error) {
 	}
 
 	if piece, ok := h.piecesCache.Get(index); ok {
-		return piece.([]byte)[begin:length], nil
+		return piece[begin:length], nil
 	}
 
 	piece := make([]byte, h.pieceSize)
@@ -167,11 +167,12 @@ func Start(totalPieces, pieceSize uint32, files []torrent.File) (*Handler, error
 		return nil, err
 	}
 
+	piecesCache, _ := lru.New[uint32, []byte](piecesCacheSize)
 	h := &Handler{
 		tempFileSize: tempFileSize,
 		tempFile:     tempFile,
 		pieceSize:    pieceSize,
-		piecesCache:  lru.New(piecesCacheSize),
+		piecesCache:  piecesCache,
 		files:        files,
 	}
 
