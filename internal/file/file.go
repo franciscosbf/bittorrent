@@ -15,7 +15,8 @@ import (
 const piecesCacheSize = 50
 
 var (
-	ErrInvalidPosition        = errors.New("file position is invalid")
+	ErrInvalidFilePosition    = errors.New("file position is invalid")
+	ErrInvalidBlockPosition   = errors.New("block position is invalid")
 	ErrTempFileCreationFailed = errors.New("failed to create temporary file")
 	ErrReadTempFileFailed     = errors.New("failed to read temporary file")
 	ErrWriteTempFileFailed    = errors.New("failed to write temporary file")
@@ -90,12 +91,17 @@ func (h *Handler) calcPieceStartPos(index uint32) int64 {
 
 func (h *Handler) ReadBlock(index, begin, length uint32) ([]byte, error) {
 	pieceStartPos := h.calcPieceStartPos(index)
-	if pieceStartPos >= h.tempFileSize || begin+length > h.pieceSize {
-		return nil, ErrInvalidPosition
+	if pieceStartPos >= h.tempFileSize {
+		return nil, ErrInvalidFilePosition
+	} else if begin+length > h.pieceSize {
+		return nil, ErrInvalidBlockPosition
 	}
 
+	low := begin
+	high := length + 1
+
 	if piece, ok := h.piecesCache.Get(index); ok {
-		return piece[begin:length], nil
+		return piece[low:high], nil
 	}
 
 	piece := make([]byte, h.pieceSize)
@@ -106,13 +112,13 @@ func (h *Handler) ReadBlock(index, begin, length uint32) ([]byte, error) {
 
 	h.piecesCache.Add(index, piece)
 
-	return piece[begin:length], nil
+	return piece[low:high], nil
 }
 
 func (h *Handler) WritePiece(index uint32, piece []byte) error {
 	pieceStartPos := h.calcPieceStartPos(index)
 	if pieceStartPos+int64(len(piece)) > h.tempFileSize {
-		return ErrInvalidPosition
+		return ErrInvalidFilePosition
 	}
 
 	if _, err := h.tempFile.WriteAt(piece, pieceStartPos); err != nil {
