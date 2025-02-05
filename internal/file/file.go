@@ -81,6 +81,10 @@ type Handler struct {
 	files        []torrent.File
 }
 
+func (h *Handler) close() {
+	closeAndDeleteFile(h.tempFile)
+}
+
 func (h *Handler) calcPieceStartPos(index uint32) int64 {
 	return int64(index * h.pieceSize)
 }
@@ -121,12 +125,22 @@ func (h *Handler) WritePiece(index uint32, piece []byte) error {
 	return nil
 }
 
+func (h *Handler) Close() error {
+	if h.tempFile == nil {
+		return ErrTempFileClosed
+	}
+
+	h.close()
+
+	return nil
+}
+
 func (h *Handler) WriteFilesAndClose(location string) error {
 	if h.tempFile == nil {
 		return ErrTempFileClosed
 	}
 
-	defer closeAndDeleteFile(h.tempFile)
+	defer h.close()
 
 	fileStartPos := h.tempFileSize
 	for i := len(h.files) - 1; i >= 0; i-- {
@@ -139,7 +153,12 @@ func (h *Handler) WriteFilesAndClose(location string) error {
 			return ErrFinalFileFailed{path}
 		}
 
-		finalFile, err := os.Open(path)
+		dir, _ := filepath.Split(path)
+		if err := os.MkdirAll(dir, 0751); err != nil {
+			return ErrFinalFileFailed{path}
+		}
+
+		finalFile, err := os.Create(path)
 		if err != nil {
 			return ErrFinalFileFailed{path}
 		}
