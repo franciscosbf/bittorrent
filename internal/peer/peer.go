@@ -147,6 +147,7 @@ type EventHandlers struct {
 }
 
 type Client struct {
+	addr          tracker.PeerAddress
 	interested    atomic.Bool
 	choked        atomic.Bool
 	closed        atomic.Bool
@@ -306,6 +307,10 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 	}()
 }
 
+func (c *Client) Addr() tracker.PeerAddress {
+	return c.addr
+}
+
 func (c *Client) Interested() bool {
 	return c.interested.Load()
 }
@@ -392,6 +397,7 @@ func Connect(
 	}
 
 	client := &Client{
+		addr:          tracker.PeerAddress,
 		conn:          conn,
 		stopHeartbeat: make(chan struct{}, 1),
 	}
