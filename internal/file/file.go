@@ -19,6 +19,7 @@ var (
 	ErrTempFileCreationFailed = errors.New("failed to create temporary file")
 	ErrReadTempFileFailed     = errors.New("failed to read temporary file")
 	ErrWriteTempFileFailed    = errors.New("failed to write temporary file")
+	ErrTempFileClosed         = errors.New("temporary file is closed")
 )
 
 type ErrFinalFileFailed struct {
@@ -29,7 +30,7 @@ func (e ErrFinalFileFailed) Error() string {
 	return fmt.Sprintf("failed to write file %v", e.path)
 }
 
-func calcTotalSize(files []torrent.File) int64 {
+func calcTempFileSize(files []torrent.File) int64 {
 	var totalSize int64
 
 	for _, file := range files {
@@ -120,21 +121,23 @@ func (h *Handler) WritePiece(index uint32, piece []byte) error {
 	return nil
 }
 
-func (h *Handler) WriteFiles(location string) error {
+func (h *Handler) WriteFilesAndClose(location string) error {
 	if h.tempFile == nil {
-		return nil
+		return ErrTempFileClosed
 	}
 
-	var fileStartPos int64
-	for _, file := range h.files {
-		path := filepath.Join(location, file.Path)
+	defer closeAndDeleteFile(h.tempFile)
+
+	fileStartPos := h.tempFileSize
+	for i := len(h.files) - 1; i >= 0; i-- {
+		file := h.files[i]
 		length := int64(file.Length)
+		fileStartPos -= length
+		path := filepath.Join(location, file.Path)
 
 		if _, err := h.tempFile.Seek(fileStartPos, io.SeekStart); err != nil {
 			return ErrFinalFileFailed{path}
 		}
-
-		fileStartPos += length
 
 		finalFile, err := os.Open(path)
 		if err != nil {
@@ -144,6 +147,12 @@ func (h *Handler) WriteFiles(location string) error {
 		_, err = io.CopyN(finalFile, h.tempFile, length)
 		finalFile.Close()
 		if err != nil {
+			os.Remove(finalFile.Name())
+			return ErrFinalFileFailed{path}
+		}
+
+		reducedTempFileSize := fileStartPos
+		if err := h.tempFile.Truncate(reducedTempFileSize); err != nil {
 			return ErrFinalFileFailed{path}
 		}
 	}
@@ -151,12 +160,8 @@ func (h *Handler) WriteFiles(location string) error {
 	return nil
 }
 
-func (h *Handler) Close() {
-	closeAndDeleteFile(h.tempFile)
-}
-
 func Start(totalPieces, pieceSize uint32, files []torrent.File) (*Handler, error) {
-	tempFileSize := calcTotalSize(files)
+	tempFileSize := calcTempFileSize(files)
 	tempFile, err := createTempFile(tempFileSize)
 	if err != nil {
 		return nil, err
