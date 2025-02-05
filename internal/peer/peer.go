@@ -397,7 +397,7 @@ func Connect(
 	}
 
 	client := &Client{
-		addr:          tracker.PeerAddress,
+		addr:          addr,
 		conn:          conn,
 		stopHeartbeat: make(chan struct{}, 1),
 	}
