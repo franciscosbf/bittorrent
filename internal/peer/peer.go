@@ -21,7 +21,7 @@ var (
 )
 
 const (
-	connTimeout = 4 * time.Second
+	connTimeout = 2 * time.Second
 	heartbeat   = 2 * time.Minute
 )
 
