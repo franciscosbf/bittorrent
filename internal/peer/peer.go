@@ -128,7 +128,7 @@ func buildCancelMsg(index, begin, length uint32) [17]byte {
 type msgType byte
 
 const (
-	chokeMsg msgType = iota + 1
+	chokeMsg msgType = iota
 	unchokeMsg
 	interestedMsg
 	notInterestedMsg
@@ -153,7 +153,7 @@ type Client struct {
 	closed        atomic.Bool
 	stopHeartbeat chan struct{}
 	conn          net.Conn
-	b             *pieces.Bitfield
+	B             *pieces.Bitfield
 }
 
 func (c *Client) setInterested(interested bool) {
@@ -188,7 +188,16 @@ func (c *Client) doHandshake(ih torrent.InfoHash, pi id.Peer) error {
 	if _, err := c.conn.Read(handshakeMsgAck); err != nil {
 		return ErrHandshakeFailed
 	}
-	if !bytes.Equal(handshakeMsg[:ackSize], handshakeMsgAck) {
+
+	handshakeMsg = handshakeMsg[:ackSize]
+	if !bytes.Equal(handshakeMsg[:22], handshakeMsgAck[:22]) ||
+		!bytes.Equal(handshakeMsg[30:], handshakeMsgAck[30:]) {
+
+		return ErrHandshakeFailed
+	}
+
+	peerId := make([]byte, 20)
+	if _, err := c.conn.Read(peerId); err != nil {
 		return ErrHandshakeFailed
 	}
 
@@ -234,18 +243,18 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				continue
 			}
 
-			var msgId [1]byte
-			if _, err := c.conn.Read(msgId[:]); err != nil {
-				return
-			}
-
 			if uint32(cap(baseBuff)) < lengthPrefix {
 				baseBuff = make([]byte, lengthPrefix)
 			}
-			buff := baseBuff[:lengthPrefix-1]
+
+			msgId := baseBuff[:1]
+			if _, err := c.conn.Read(msgId); err != nil {
+				return
+			}
+
+			buff := baseBuff[1:]
 
 			mt := msgType(msgId[0])
-
 			switch mt {
 			case chokeMsg:
 				c.setChoked(true)
@@ -262,7 +271,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 
 				var index uint32
 				binary.Decode(buff, binary.BigEndian, &index)
-				if err := c.b.Mark(index); err != nil {
+				if err := c.B.Mark(index); err != nil {
 					return
 				}
 			case bitfieldMsg:
@@ -270,7 +279,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 					return
 				}
 
-				if err := c.b.Overwrite(buff); err != nil {
+				if err := c.B.Overwrite(buff); err != nil {
 					return
 				}
 			case requestMsg, cancelMsg:
@@ -382,12 +391,12 @@ func (c *Client) Close() {
 }
 
 func (c *Client) HasPiece(index uint32) bool {
-	return c.b.Marked(index)
+	return c.B.Marked(index)
 }
 
 func Connect(
 	addr tracker.PeerAddress,
-	ih torrent.InfoHash,
+	tmeta *torrent.Metadata,
 	pi id.Peer,
 	eh EventHandlers,
 ) (*Client, error) {
@@ -396,13 +405,16 @@ func Connect(
 		return nil, err
 	}
 
+	numPieces := len(tmeta.Pieces)
+	b := pieces.NewBitfield(uint32(numPieces))
 	client := &Client{
 		addr:          addr,
 		conn:          conn,
 		stopHeartbeat: make(chan struct{}, 1),
+		B:             b,
 	}
 
-	if err := client.doHandshake(ih, pi); err != nil {
+	if err := client.doHandshake(tmeta.InfoHash, pi); err != nil {
 		return nil, err
 	}
 

@@ -137,18 +137,17 @@ func (c *Client) RequestPeers(e Event) (*Peers, error) {
 }
 
 func New(
-	tu *torrent.TrackerUrl,
 	pi id.Peer,
-	ih torrent.InfoHash,
+	tmeta *torrent.Metadata,
 	sd *stats.Download,
 ) *Client {
 	hc := req.C().SetTimeout(requestTimeout)
 
 	return &Client{
-		tu:        tu,
+		tu:        tmeta.Announce,
 		hc:        hc,
 		pi:        pi,
-		ih:        ih,
+		ih:        tmeta.InfoHash,
 		sd:        sd,
 		trackerId: "",
 	}

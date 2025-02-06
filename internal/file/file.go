@@ -182,8 +182,8 @@ func (h *Handler) WriteFilesAndClose(location string) error {
 	return nil
 }
 
-func Start(totalPieces, pieceSize uint32, files []torrent.File) (*Handler, error) {
-	tempFileSize := calcTempFileSize(files)
+func Start(tmeta *torrent.Metadata) (*Handler, error) {
+	tempFileSize := calcTempFileSize(tmeta.Files)
 	tempFile, err := createTempFile(tempFileSize)
 	if err != nil {
 		return nil, err
@@ -193,9 +193,9 @@ func Start(totalPieces, pieceSize uint32, files []torrent.File) (*Handler, error
 	h := &Handler{
 		tempFileSize: tempFileSize,
 		tempFile:     tempFile,
-		pieceSize:    pieceSize,
+		pieceSize:    tmeta.PieceLength,
 		piecesCache:  piecesCache,
-		files:        files,
+		files:        tmeta.Files,
 	}
 
 	return h, nil

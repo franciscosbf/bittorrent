@@ -61,7 +61,7 @@ func (f File) String() string {
 	return fmt.Sprintf("{Path: %v, Length: %v}", f.Path, f.Length)
 }
 
-type Torrent struct {
+type Metadata struct {
 	Announce    *TrackerUrl
 	PieceLength uint32
 	Pieces      []Piece
@@ -69,12 +69,12 @@ type Torrent struct {
 	InfoHash
 }
 
-func (t *Torrent) String() string {
+func (t *Metadata) String() string {
 	return fmt.Sprintf("{Announce: %v, PieceLength: %v, Pieces: %v, Files: %v, InfoHash: %v}",
 		t.Announce, t.PieceLength, t.Pieces, t.Files, t.InfoHash)
 }
 
-func Parse(file []byte) (*Torrent, error) {
+func Parse(file []byte) (*Metadata, error) {
 	var torrentFile struct {
 		Announce string `bencode:"announce"`
 		Info     struct {
@@ -93,7 +93,7 @@ func Parse(file []byte) (*Torrent, error) {
 	}
 
 	announce, err := url.Parse(torrentFile.Announce)
-	if err != nil {
+	if torrentFile.Announce == "" || err != nil {
 		return nil, ErrInvalidFile("invalid announce field")
 	}
 
@@ -139,12 +139,11 @@ func Parse(file []byte) (*Torrent, error) {
 	}
 	rawInfo := bytes.NewBuffer([]byte{})
 	if err := bencode.Marshal(rawInfo, rawTorrentFile.(map[string]any)["info"]); err != nil {
-		fmt.Println(err)
 		return nil, ErrParseFailed
 	}
 	infoHash := sha1.Sum(rawInfo.Bytes())
 
-	return &Torrent{
+	return &Metadata{
 		Announce:    (*TrackerUrl)(announce),
 		PieceLength: pieceLength,
 		Pieces:      pieces,

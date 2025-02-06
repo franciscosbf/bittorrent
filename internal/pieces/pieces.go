@@ -11,24 +11,24 @@ var (
 )
 
 type Bitfield struct {
-	m           sync.RWMutex
+	mutex       sync.RWMutex
 	numPieces   uint32
 	extraFields uint32
 	bts         []byte
 }
 
 func (b *Bitfield) Raw() []byte {
-	b.m.RLock()
-	defer b.m.RUnlock()
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
 
-	return append(make([]byte, len(b.bts)), b.bts...)
+	return b.bts
 }
 
 func (b *Bitfield) Overwrite(bts []byte) error {
-	b.m.Lock()
-	defer b.m.Unlock()
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
 
-	if uint32(len(bts)) != b.numPieces {
+	if len(bts) != len(b.bts) {
 		return ErrInvalidBitfield
 	}
 
@@ -47,8 +47,8 @@ func (b *Bitfield) Overwrite(bts []byte) error {
 }
 
 func (b *Bitfield) Mark(index uint32) error {
-	b.m.Lock()
-	defer b.m.Unlock()
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
 
 	if index >= b.numPieces {
 		return ErrInvalidPosition
@@ -63,8 +63,8 @@ func (b *Bitfield) Mark(index uint32) error {
 }
 
 func (b *Bitfield) Marked(index uint32) bool {
-	b.m.RLock()
-	defer b.m.RUnlock()
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
 
 	chunk := uint32(len(b.bts)) / index
 	pos := index % 8
