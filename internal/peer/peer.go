@@ -153,7 +153,7 @@ type Client struct {
 	closed        atomic.Bool
 	stopHeartbeat chan struct{}
 	conn          net.Conn
-	B             *pieces.Bitfield
+	b             *pieces.Bitfield
 }
 
 func (c *Client) setInterested(interested bool) {
@@ -271,7 +271,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 
 				var index uint32
 				binary.Decode(buff, binary.BigEndian, &index)
-				if err := c.B.Mark(index); err != nil {
+				if err := c.b.Mark(index); err != nil {
 					return
 				}
 			case bitfieldMsg:
@@ -279,7 +279,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 					return
 				}
 
-				if err := c.B.Overwrite(buff); err != nil {
+				if err := c.b.Overwrite(buff); err != nil {
 					return
 				}
 			case requestMsg, cancelMsg:
@@ -391,7 +391,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) HasPiece(index uint32) bool {
-	return c.B.Marked(index)
+	return c.b.Marked(index)
 }
 
 func Connect(
@@ -411,7 +411,7 @@ func Connect(
 		addr:          addr,
 		conn:          conn,
 		stopHeartbeat: make(chan struct{}, 1),
-		B:             b,
+		b:             b,
 	}
 
 	if err := client.doHandshake(tmeta.InfoHash, pi); err != nil {
