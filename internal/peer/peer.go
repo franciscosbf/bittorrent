@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ var (
 
 const (
 	connTimeout      = 1500 * time.Millisecond
+	handshakeTimeout = 2 * time.Second
 	heartbeatTimeout = 2 * time.Minute
 )
 
@@ -122,8 +124,6 @@ const (
 	bitfieldMsg
 	requestMsg
 	pieceMsg
-	cancelMsg
-	portMsg
 )
 
 type EventHandlers struct {
@@ -218,7 +218,6 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 	go func() {
 		defer c.close()
 
-		baseBuff := []byte{}
 		for {
 			rawLengthPrefix := [4]byte{}
 			if _, err := c.conn.Read(rawLengthPrefix[:]); err != nil {
@@ -231,18 +230,18 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				continue
 			}
 
-			if uint32(cap(baseBuff)) < lengthPrefix {
-				baseBuff = make([]byte, lengthPrefix)
+			rawMsgId := [1]byte{}
+			if _, err := c.conn.Read(rawMsgId[:]); err != nil {
+				return
 			}
+			mt := msgType(rawMsgId[0])
 
-			msgId := baseBuff[:1]
-			if _, err := c.conn.Read(msgId); err != nil {
+			if mt > 9 {
 				return
 			}
 
-			buff := baseBuff[1:lengthPrefix]
+			var buff bytes.Buffer
 
-			mt := msgType(msgId[0])
 			switch mt {
 			case chokeMsg:
 				c.setChoked(true)
@@ -253,50 +252,52 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 			case notInterestedMsg:
 				c.setInterested(false)
 			case haveMsg:
-				if _, err := c.conn.Read(buff); err != nil {
+				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
 					return
 				}
+				data := buff.Bytes()
 
 				var index uint32
-				binary.Decode(buff, binary.BigEndian, &index)
+				binary.Decode(data, binary.BigEndian, &index)
 
 				if err := c.b.Mark(index); err != nil {
 					return
 				}
 			case bitfieldMsg:
-				if _, err := c.conn.Read(buff); err != nil {
+				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
 					return
 				}
+				data := buff.Bytes()
 
-				if err := c.b.Overwrite(buff); err != nil {
+				if err := c.b.Overwrite(data); err != nil {
 					return
 				}
 			case requestMsg:
-				if _, err := c.conn.Read(buff); err != nil {
+				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
 					return
 				}
+				data := buff.Bytes()
 
 				var index, begin, length uint32
-				binary.Decode(buff[:4], binary.BigEndian, &index)
-				binary.Decode(buff[4:8], binary.BigEndian, &begin)
-				binary.Decode(buff[8:], binary.BigEndian, &length)
+				binary.Decode(data[:4], binary.BigEndian, &index)
+				binary.Decode(data[4:8], binary.BigEndian, &begin)
+				binary.Decode(data[8:], binary.BigEndian, &length)
 
 				go eh.RequestedBlock(c, index, begin, length)
 			case pieceMsg:
-				if _, err := c.conn.Read(buff); err != nil {
+				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
 					return
 				}
+				data := buff.Bytes()
 
 				var index, begin uint32
-				binary.Decode(buff[:4], binary.BigEndian, &index)
-				binary.Decode(buff[4:8], binary.BigEndian, &begin)
+				binary.Decode(data[:4], binary.BigEndian, &index)
+				binary.Decode(data[4:8], binary.BigEndian, &begin)
 
-				block := buff[8:]
+				block := data[8:]
 
 				go eh.ReceivedBlock(c, index, begin, block)
-			case cancelMsg, portMsg:
 			default:
-				return
 			}
 		}
 	}()
@@ -393,8 +394,20 @@ func Connect(
 		b:             b,
 	}
 
-	if err := client.doHandshake(tmeta.InfoHash, pi); err != nil {
-		return nil, err
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+	defer cancel()
+	handshakeRet := make(chan error, 1)
+	go func() {
+		handshakeRet <- client.doHandshake(tmeta.InfoHash, pi)
+	}()
+	select {
+	case <-ctx.Done():
+		client.Close()
+		return nil, ErrHandshakeFailed
+	case err := <-handshakeRet:
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	client.setChoked(true)

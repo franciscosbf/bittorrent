@@ -1,6 +1,9 @@
 package leecher
 
 import (
+	"context"
+	"crypto/sha1"
+	"fmt"
 	"sort"
 	"time"
 
@@ -15,18 +18,19 @@ import (
 
 const (
 	defaultBlockSz uint32 = 16384
-	maxPeers       uint32 = 30
-	awaitTimeout          = 1500 * time.Millisecond
+	maxPeers              = 30
+	awaitTimeout          = 500 * time.Millisecond
 )
 
 type rb struct {
+	c            *peer.Client
 	index, begin uint32
 	block        []byte
 }
 
 type piece struct {
 	hash   torrent.PieceHash
-	pos    uint32
+	index  uint32
 	length uint32
 	occurs uint32
 }
@@ -52,9 +56,7 @@ func (d *downloader) receivedBlockEvent(c *peer.Client, index, begin uint32, blo
 		return
 	}
 
-	d.rbs <- rb{index, begin, block}
-
-	d.sd.AddDownloaded(uint32(len(block)))
+	d.rbs <- rb{c, index, begin, block}
 }
 
 func (d *downloader) requestedBlockEvent(c *peer.Client, index, begin, length uint32) {
@@ -78,20 +80,26 @@ func (d *downloader) requestedBlockEvent(c *peer.Client, index, begin, length ui
 	}
 }
 
-func (d *downloader) requestPeers() ([]*peer.Client, time.Time, error) {
-	tPeers, err := d.tcli.RequestPeers(tracker.Started)
+func (d *downloader) requestPeers() ([]*peer.Client, error) {
+	addrs, err := d.tcli.RequestPeers(tracker.Started)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, err
 	}
 
 	eh := peer.EventHandlers{
 		ReceivedBlock:  d.receivedBlockEvent,
 		RequestedBlock: d.requestedBlockEvent,
 	}
+
+	nPeers := len(addrs)
+	if nPeers > maxPeers {
+		nPeers = maxPeers
+	}
+
 	peers := []*peer.Client{}
-	connectedPeers := make(chan *peer.Client, len(tPeers.Addrs))
-	for _, addr := range tPeers.Addrs {
-		go func(addr tracker.PeerAddress) {
+	connectedPeers := make(chan *peer.Client, nPeers)
+	for _, addr := range addrs[:nPeers] {
+		go func(addr tracker.PeerAddress, eh peer.EventHandlers) {
 			pCli, err := peer.Connect(addr, d.tmeta, d.pi, eh)
 			if err == nil {
 				pCli.SendBitfield(d.b)
@@ -99,31 +107,30 @@ func (d *downloader) requestPeers() ([]*peer.Client, time.Time, error) {
 				pCli.SendInterested()
 			}
 			connectedPeers <- pCli
-		}(addr)
+		}(addr, eh)
 	}
-	for range tPeers.Addrs {
+	for range nPeers {
 		if pCli := <-connectedPeers; pCli != nil {
+			fmt.Printf("got peer %v\n", pCli.Addr())
 			peers = append(peers, pCli)
 		}
 	}
 
-	nextRequest := time.Now().Add(tPeers.RetryInterval)
-
-	return peers, nextRequest, nil
+	return peers, nil
 }
 
 func (d *downloader) sortPieces(peers []*peer.Client) []*piece {
-	pieceHashes := d.tmeta.Pieces
-	pieces := make([]*piece, len(d.tmeta.Pieces))
-	for i, h := range pieceHashes {
-		pieces = append(pieces, &piece{h, uint32(i), d.tmeta.PieceLength, 0})
+	nPieces := uint32(len(d.tmeta.Pieces))
+	pieces := make([]*piece, nPieces)
+	for i, hashPiece := range d.tmeta.Pieces {
+		pieces[i] = &piece{hashPiece, uint32(i), d.tmeta.PieceLength, 0}
 	}
-	pieces[len(pieces)-1].length -= d.tmeta.TotalSize % uint32(len(pieceHashes))
+	pieces[len(pieces)-1].length -= d.tmeta.TotalSize % nPieces
 
-	for i := range len(d.tmeta.Pieces) {
+	for _, piece := range pieces {
 		for _, pCli := range peers {
-			if pCli.HasPiece(uint32(i)) {
-				pieces[i].occurs++
+			if pCli.HasPiece(piece.index) {
+				piece.occurs++
 			}
 		}
 	}
@@ -155,39 +162,67 @@ func (d *downloader) findPeerWithPiece(peers []*peer.Client, index uint32) *peer
 	return nil
 }
 
+func (d *downloader) waitForBlock(
+	pCli *peer.Client,
+	pIndex, bStart, bLength uint32,
+) (block []byte, repeat bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), awaitTimeout)
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+		return nil, false
+	case rb := <-d.rbs:
+		if rb.c != pCli {
+			return nil, true
+		}
+		if pIndex != rb.index || bStart != rb.begin || bLength != uint32(len(rb.block)) {
+			return nil, false
+		}
+
+		return rb.block, false
+	}
+}
+
+func (d *downloader) closePeers(peers []*peer.Client) {
+	for _, pCli := range peers {
+		pCli.Close()
+	}
+}
+
 func (d *downloader) download() error {
 	defer d.fh.Close()
 
-	peers, nextPeersRequest, err := d.requestPeers()
+	peers, err := d.requestPeers()
 	if err != nil {
 		return err
 	}
+
+	fmt.Printf("Got %v peers\n", len(peers))
 
 	time.Sleep(awaitTimeout)
 
 	pieces := d.sortPieces(peers)
 
-	_ = peers
-	_ = nextPeersRequest
-
-	for _, p := range pieces {
-		pHash := p.hash
+	for _, piece := range pieces {
+		pHash := piece.hash
 		_ = pHash
-		pPos := p.pos
-		pLength := p.length
+		pIndex := piece.index
+		pLength := piece.length
+
+		var piece []byte
 
 		for bPos := range d.nBlocks {
-			_ = bPos
 			for {
-				pCli := d.findPeerWithPiece(peers, pPos)
+				pCli := d.findPeerWithPiece(peers, pIndex)
 				if pCli == nil {
-					if !time.Now().After(nextPeersRequest) {
-						time.Sleep(time.Until(nextPeersRequest))
-					}
+					fmt.Println("fetching new peers")
 
-					if peers, nextPeersRequest, err = d.requestPeers(); err != nil {
+					d.closePeers(peers)
+					if peers, err = d.requestPeers(); err != nil {
 						return err
 					}
+					fmt.Printf("Got %v peers\n", len(peers))
 
 					continue
 				}
@@ -199,15 +234,38 @@ func (d *downloader) download() error {
 				} else {
 					bLength = d.blockSz
 				}
-				if !pCli.SendRequest(pPos, bStart, bLength) {
+				if !pCli.SendRequest(pIndex, bStart, bLength) {
+					fmt.Printf("failed to send request to %v\n", pCli.Addr())
 					continue
 				}
 
-				// TODO: wait for block or try again
+				var block []byte
+				var repeat bool
+				for {
+					if block, repeat = d.waitForBlock(pCli, pIndex, bStart, bLength); !repeat {
+						break
+					}
+					fmt.Printf("repeating with %v\n", pCli.Addr())
+				}
+				if block != nil {
+					piece = append(piece, block...)
+					fmt.Printf("%v | pIndex: %v, bStart: %v, bLength: %v\n", pCli.Addr(), pIndex, bStart, bLength)
+					break
+				}
 			}
-
-			// TODO: check piece hash, write if right or try again
 		}
+
+		d.spreadHavePiece(peers, pIndex)
+
+		fmt.Printf("got piece %v\n", pIndex)
+
+		if sha1.Sum(piece) != pHash {
+			fmt.Println("piece hash doesn't match")
+		}
+
+		// TODO: check piece hash, write if right or try again
+
+		d.sd.AddDownloaded(pLength)
 	}
 
 	return nil

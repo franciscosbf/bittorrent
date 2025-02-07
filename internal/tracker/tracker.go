@@ -44,15 +44,6 @@ func (pa PeerAddress) String() string {
 	return pa.HostPort()
 }
 
-type Peers struct {
-	RetryInterval time.Duration
-	Addrs         []PeerAddress
-}
-
-func (p *Peers) String() string {
-	return fmt.Sprintf("{RetryInterval: %v, Addrs: %v}", p.RetryInterval, p.Addrs)
-}
-
 type Client struct {
 	tu        *torrent.TrackerUrl
 	hc        *req.Client
@@ -67,7 +58,7 @@ const (
 	requestTimeout        = 4 * time.Second
 )
 
-func (c *Client) RequestPeers(e Event) (*Peers, error) {
+func (c *Client) RequestPeers(e Event) ([]PeerAddress, error) {
 	ih := c.ih.Raw()
 	pi := c.pi.Raw()
 	port := strconv.FormatUint(uint64(fakePort), 10)
@@ -96,7 +87,6 @@ func (c *Client) RequestPeers(e Event) (*Peers, error) {
 
 	var trackerResponse struct {
 		FailureReason string `bencode:"failure reason"`
-		Interval      uint64 `bencode:"interval"`
 		TrackerId     string `bencode:"tracker id"`
 		Peers         string `bencode:"peers"`
 	}
@@ -111,8 +101,6 @@ func (c *Client) RequestPeers(e Event) (*Peers, error) {
 	if len(trackerResponse.Peers)%6 != 0 {
 		return nil, ErrParseFailed
 	}
-
-	retryInterval := time.Duration(trackerResponse.Interval) * time.Second
 
 	addrs := []PeerAddress{}
 	rawPeers := []byte(trackerResponse.Peers)
@@ -131,10 +119,7 @@ func (c *Client) RequestPeers(e Event) (*Peers, error) {
 
 	c.trackerId = trackerResponse.TrackerId
 
-	return &Peers{
-		RetryInterval: retryInterval,
-		Addrs:         addrs,
-	}, nil
+	return addrs, nil
 }
 
 func New(
