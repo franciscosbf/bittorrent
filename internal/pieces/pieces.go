@@ -74,7 +74,7 @@ func (b *Bitfield) Marked(index uint32) bool {
 
 	chunk, pos := b.calcPosition(index)
 
-	return (b.bts[chunk] & (1 << pos)) == 1
+	return (b.bts[chunk]>>pos)&1 == 1
 }
 
 func NewBitfield(numPieces uint32) *Bitfield {
