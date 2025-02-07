@@ -70,17 +70,18 @@ const (
 func (c *Client) RequestPeers(e Event) (*Peers, error) {
 	ih := c.ih.Raw()
 	pi := c.pi.Raw()
-	uploaded := c.sd.Uploaded()
-	downloaded := c.sd.Downloaded()
-	left := c.sd.Left()
+	port := strconv.FormatUint(uint64(fakePort), 10)
+	uploaded := strconv.FormatUint(uint64(c.sd.Uploaded()), 10)
+	downloaded := strconv.FormatUint(uint64(c.sd.Downloaded()), 10)
+	left := strconv.FormatUint(uint64(c.sd.Left()), 10)
 
 	request := c.hc.R().
 		SetQueryParam("info_hash", string(ih[:])).
 		SetQueryParam("peer_id", string(pi[:])).
-		SetQueryParam("port", strconv.FormatUint(uint64(fakePort), 10)).
-		SetQueryParam("uploaded", strconv.FormatUint(uploaded, 10)).
-		SetQueryParam("downloaded", strconv.FormatUint(downloaded, 10)).
-		SetQueryParam("left", strconv.FormatUint(left, 10)).
+		SetQueryParam("port", port).
+		SetQueryParam("uploaded", uploaded).
+		SetQueryParam("downloaded", downloaded).
+		SetQueryParam("left", left).
 		SetQueryParam("compact", "1").
 		SetQueryParam("event", string(e))
 

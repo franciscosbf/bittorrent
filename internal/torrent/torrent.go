@@ -41,13 +41,13 @@ func (tu *TrackerUrl) String() string {
 	return fmt.Sprintf("%v", tu.FormattedUrl())
 }
 
-type Piece [20]byte
+type PieceHash [20]byte
 
-func (p Piece) Raw() [20]byte {
+func (p PieceHash) Raw() [20]byte {
 	return [20]byte(p)
 }
 
-func (p Piece) String() string {
+func (p PieceHash) String() string {
 	raw := p.Raw()
 	return fmt.Sprintf("%v", hex.EncodeToString(raw[:]))
 }
@@ -64,8 +64,9 @@ func (f File) String() string {
 type Metadata struct {
 	Announce    *TrackerUrl
 	PieceLength uint32
-	Pieces      []Piece
+	Pieces      []PieceHash
 	Files       []File
+	TotalSize   uint32
 	InfoHash
 }
 
@@ -103,14 +104,14 @@ func Parse(file []byte) (*Metadata, error) {
 		return nil, ErrInvalidFile("invalid pieces field")
 	}
 
-	pieces := []Piece{}
+	pieces := []PieceHash{}
 	rawPieces := []byte(torrentFile.Info.Pieces)
 	for i := range len(torrentFile.Info.Pieces) / 20 {
 		start := i * 20
 		end := start + 20
 		raw := rawPieces[start:end]
 
-		piece := Piece(raw[:])
+		piece := PieceHash(raw[:])
 		pieces = append(pieces, piece)
 	}
 
@@ -133,6 +134,11 @@ func Parse(file []byte) (*Metadata, error) {
 		}
 	}
 
+	var totalSize uint32
+	for _, file := range files {
+		totalSize += file.Length
+	}
+
 	rawTorrentFile, err := bencode.Decode(bytes.NewReader(file))
 	if err != nil {
 		return nil, ErrParseFailed
@@ -148,6 +154,7 @@ func Parse(file []byte) (*Metadata, error) {
 		PieceLength: pieceLength,
 		Pieces:      pieces,
 		Files:       files,
+		TotalSize:   totalSize,
 		InfoHash:    InfoHash(infoHash),
 	}, nil
 }

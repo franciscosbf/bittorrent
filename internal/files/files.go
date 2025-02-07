@@ -1,4 +1,4 @@
-package file
+package files
 
 import (
 	"errors"
@@ -29,16 +29,6 @@ type ErrFinalFileFailed struct {
 
 func (e ErrFinalFileFailed) Error() string {
 	return fmt.Sprintf("failed to write file %v", e.path)
-}
-
-func calcTempFileSize(files []torrent.File) int64 {
-	var totalSize int64
-
-	for _, file := range files {
-		totalSize += int64(file.Length)
-	}
-
-	return totalSize
 }
 
 func closeAndDeleteFile(file *os.File) {
@@ -131,20 +121,10 @@ func (h *Handler) WritePiece(index uint32, piece []byte) error {
 }
 
 func (h *Handler) Close() {
-	if h.tempFile == nil {
-		return
-	}
-
 	h.close()
 }
 
 func (h *Handler) WriteFilesAndClose(location string) error {
-	if h.tempFile == nil {
-		return ErrTempFileClosed
-	}
-
-	defer h.close()
-
 	fileStartPos := h.tempFileSize
 	for i := len(h.files) - 1; i >= 0; i-- {
 		file := h.files[i]
@@ -183,7 +163,7 @@ func (h *Handler) WriteFilesAndClose(location string) error {
 }
 
 func Start(tmeta *torrent.Metadata) (*Handler, error) {
-	tempFileSize := calcTempFileSize(tmeta.Files)
+	tempFileSize := int64(tmeta.TotalSize)
 	tempFile, err := createTempFile(tempFileSize)
 	if err != nil {
 		return nil, err

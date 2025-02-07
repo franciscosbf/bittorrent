@@ -3,6 +3,8 @@ package pieces
 import (
 	"errors"
 	"sync"
+
+	"github.com/franciscosbf/bittorrent/internal/torrent"
 )
 
 var (
@@ -68,18 +70,22 @@ func (b *Bitfield) Mark(index uint32) error {
 	return nil
 }
 
-func (b *Bitfield) Marked(index uint32) bool {
+func (b *Bitfield) Marked(index uint32) (bool, error) {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()
 
+	if index >= b.numPieces {
+		return false, ErrInvalidPosition
+	}
+
 	chunk, pos := b.calcPosition(index)
 
-	return (b.bts[chunk]>>pos)&1 == 1
+	return (b.bts[chunk]>>pos)&1 == 1, nil
 }
 
-func NewBitfield(numPieces uint32) *Bitfield {
+func NewBitfield(tmeta *torrent.Metadata) *Bitfield {
+	numPieces := uint32(len(tmeta.Pieces))
 	extracFields := numPieces % 8
-
 	return &Bitfield{
 		numPieces:   numPieces,
 		extraFields: extracFields,

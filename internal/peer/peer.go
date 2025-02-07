@@ -21,8 +21,8 @@ var (
 )
 
 const (
-	connTimeout = 1500 * time.Millisecond
-	heartbeat   = 2 * time.Minute
+	connTimeout      = 1500 * time.Millisecond
+	heartbeatTimeout = 2 * time.Minute
 )
 
 func dialTcpConn(addr string) (net.Conn, error) {
@@ -69,10 +69,6 @@ func buildInterestedMsg() [5]byte {
 	return [5]byte{0, 0, 0, 1, 2}
 }
 
-func buildNotInterestedMsg() [5]byte {
-	return [5]byte{0, 0, 0, 1, 3}
-}
-
 func buildHaveMsg(index uint32) [9]byte {
 	buff := [9]byte{0, 0, 0, 5, 4}
 
@@ -84,10 +80,10 @@ func buildHaveMsg(index uint32) [9]byte {
 func buildBitfieldMsg(bitfield []byte) []byte {
 	buff := make([]byte, 4+1+len(bitfield))
 
-	binary.Encode(buff, binary.BigEndian, cap(buff))
+	binary.Encode(buff, binary.BigEndian, uint32(1+len(bitfield)))
 	buff[4] = 5
 
-	copy(buff[4:], bitfield)
+	copy(buff[5:], bitfield)
 
 	return buff
 }
@@ -115,16 +111,6 @@ func buildPieceBlockMsg(index, begin uint32, block []byte) []byte {
 	return buff
 }
 
-func buildCancelMsg(index, begin, length uint32) [17]byte {
-	buff := [17]byte{0, 0, 0, 13, 8}
-
-	binary.Encode(buff[5:], binary.BigEndian, index)
-	binary.Encode(buff[9:], binary.BigEndian, begin)
-	binary.Encode(buff[13:], binary.BigEndian, length)
-
-	return buff
-}
-
 type msgType byte
 
 const (
@@ -143,10 +129,10 @@ const (
 type EventHandlers struct {
 	ReceivedBlock  func(c *Client, index, begin uint32, block []byte)
 	RequestedBlock func(c *Client, index, begin, length uint32)
-	CancelledBlock func(c *Client, index, begin, length uint32)
 }
 
 type Client struct {
+	pi            id.Peer
 	addr          tracker.PeerAddress
 	interested    atomic.Bool
 	choked        atomic.Bool
@@ -201,11 +187,13 @@ func (c *Client) doHandshake(ih torrent.InfoHash, pi id.Peer) error {
 		return ErrHandshakeFailed
 	}
 
+	c.pi = id.Peer(peerId)
+
 	return nil
 }
 
 func (c *Client) keepBeating() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), heartbeat)
+	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
 	defer cancel()
 
 	select {
@@ -234,7 +222,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 		for {
 			rawLengthPrefix := [4]byte{}
 			if _, err := c.conn.Read(rawLengthPrefix[:]); err != nil {
-				break
+				return
 			}
 			var lengthPrefix uint32
 			binary.Decode(rawLengthPrefix[:], binary.BigEndian, &lengthPrefix)
@@ -252,7 +240,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				return
 			}
 
-			buff := baseBuff[1:]
+			buff := baseBuff[1:lengthPrefix]
 
 			mt := msgType(msgId[0])
 			switch mt {
@@ -271,6 +259,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 
 				var index uint32
 				binary.Decode(buff, binary.BigEndian, &index)
+
 				if err := c.b.Mark(index); err != nil {
 					return
 				}
@@ -282,7 +271,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				if err := c.b.Overwrite(buff); err != nil {
 					return
 				}
-			case requestMsg, cancelMsg:
+			case requestMsg:
 				if _, err := c.conn.Read(buff); err != nil {
 					return
 				}
@@ -292,11 +281,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				binary.Decode(buff[4:8], binary.BigEndian, &begin)
 				binary.Decode(buff[8:], binary.BigEndian, &length)
 
-				if mt == requestMsg {
-					go eh.RequestedBlock(c, index, begin, length)
-				} else {
-					go eh.CancelledBlock(c, index, begin, length)
-				}
+				go eh.RequestedBlock(c, index, begin, length)
 			case pieceMsg:
 				if _, err := c.conn.Read(buff); err != nil {
 					return
@@ -305,15 +290,20 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				var index, begin uint32
 				binary.Decode(buff[:4], binary.BigEndian, &index)
 				binary.Decode(buff[4:8], binary.BigEndian, &begin)
-				block := append(make([]byte, lengthPrefix-8), buff[8:]...)
+
+				block := buff[8:]
 
 				go eh.ReceivedBlock(c, index, begin, block)
-			case portMsg:
+			case cancelMsg, portMsg:
 			default:
 				return
 			}
 		}
 	}()
+}
+
+func (c *Client) Id() id.Peer {
+	return c.pi
 }
 
 func (c *Client) Addr() tracker.PeerAddress {
@@ -350,12 +340,6 @@ func (c *Client) SendInterested() bool {
 	return c.sendMsg(msg[:])
 }
 
-func (c *Client) SendNotInterested() bool {
-	msg := buildNotInterestedMsg()
-
-	return c.sendMsg(msg[:])
-}
-
 func (c *Client) SendHave(index uint32) bool {
 	msg := buildHaveMsg(index)
 
@@ -380,18 +364,14 @@ func (c *Client) SendPieceBlock(index, begin uint32, block []byte) bool {
 	return c.sendMsg(msg[:])
 }
 
-func (c *Client) SendCancel(index, begin, length uint32) bool {
-	msg := buildCancelMsg(index, begin, length)
-
-	return c.sendMsg(msg[:])
-}
-
 func (c *Client) Close() {
 	c.close()
 }
 
 func (c *Client) HasPiece(index uint32) bool {
-	return c.b.Marked(index)
+	marked, _ := c.b.Marked(index)
+
+	return marked
 }
 
 func Connect(
@@ -405,8 +385,7 @@ func Connect(
 		return nil, err
 	}
 
-	numPieces := len(tmeta.Pieces)
-	b := pieces.NewBitfield(uint32(numPieces))
+	b := pieces.NewBitfield(tmeta)
 	client := &Client{
 		addr:          addr,
 		conn:          conn,

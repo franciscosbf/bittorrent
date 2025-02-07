@@ -1,41 +1,40 @@
 package stats
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/franciscosbf/bittorrent/internal/torrent"
+)
 
 type Download struct {
-	uploaded   atomic.Uint64
-	downloaded atomic.Uint64
-	left       atomic.Uint64
+	toDownload uint32
+	uploaded   atomic.Uint32
+	downloaded atomic.Uint32
+	left       atomic.Uint32
 }
 
-func (d *Download) AddUploaded(size uint64) {
+func (d *Download) AddUploaded(size uint32) {
 	d.uploaded.Add(size)
 }
 
-func (d *Download) Uploaded() uint64 {
+func (d *Download) Uploaded() uint32 {
 	return d.uploaded.Load()
 }
 
-func (d *Download) AddDownloaded(size uint64) {
+func (d *Download) AddDownloaded(size uint32) {
 	d.downloaded.Add(size)
 }
 
-func (d *Download) Downloaded() uint64 {
+func (d *Download) Downloaded() uint32 {
 	return d.downloaded.Load()
 }
 
-func (d *Download) SubLeft(size uint64) {
-	d.left.Add(-size)
+func (d *Download) Left() uint32 {
+	return d.toDownload - d.Downloaded()
 }
 
-func (d *Download) Left() uint64 {
-	return d.left.Load()
-}
-
-func New(torrentSize uint64) *Download {
-	d := &Download{}
-
-	d.left.Store(torrentSize)
+func New(tmeta *torrent.Metadata) *Download {
+	d := &Download{toDownload: tmeta.TotalSize}
 
 	return d
 }
