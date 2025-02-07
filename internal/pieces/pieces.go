@@ -17,6 +17,13 @@ type Bitfield struct {
 	bts         []byte
 }
 
+func (b *Bitfield) calcPosition(index uint32) (chunk uint32, pos uint32) {
+	chunk = (index * uint32(len(b.bts))) / b.numPieces
+	pos = index % 8
+
+	return
+}
+
 func (b *Bitfield) Raw() []byte {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()
@@ -54,8 +61,7 @@ func (b *Bitfield) Mark(index uint32) error {
 		return ErrInvalidPosition
 	}
 
-	chunk := uint32(len(b.bts)) / index
-	pos := index % 8
+	chunk, pos := b.calcPosition(index)
 
 	b.bts[chunk] |= (1 << pos)
 
@@ -66,8 +72,7 @@ func (b *Bitfield) Marked(index uint32) bool {
 	b.mutex.RLock()
 	defer b.mutex.RUnlock()
 
-	chunk := uint32(len(b.bts)) / index
-	pos := index % 8
+	chunk, pos := b.calcPosition(index)
 
 	return (b.bts[chunk] & (1 << pos)) == 1
 }
