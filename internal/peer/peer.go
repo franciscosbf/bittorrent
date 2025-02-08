@@ -170,8 +170,9 @@ func (c *Client) doHandshake(ih torrent.InfoHash, pi id.Peer) error {
 	}
 
 	ackSize := len(handshakeMsg) - len(pi.Raw())
+
 	handshakeMsgAck := make([]byte, ackSize)
-	if _, err := c.conn.Read(handshakeMsgAck); err != nil {
+	if _, err := io.ReadFull(c.conn, handshakeMsgAck); err != nil {
 		return ErrHandshakeFailed
 	}
 
@@ -182,11 +183,10 @@ func (c *Client) doHandshake(ih torrent.InfoHash, pi id.Peer) error {
 		return ErrHandshakeFailed
 	}
 
-	peerId := make([]byte, 20)
-	if _, err := c.conn.Read(peerId); err != nil {
+	var peerId [20]byte
+	if _, err := io.ReadFull(c.conn, peerId[:]); err != nil {
 		return ErrHandshakeFailed
 	}
-
 	c.pi = id.Peer(peerId)
 
 	return nil
@@ -218,9 +218,11 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 	go func() {
 		defer c.close()
 
+		rawContent := []byte{}
+
 		for {
-			rawLengthPrefix := [4]byte{}
-			if _, err := c.conn.Read(rawLengthPrefix[:]); err != nil {
+			var rawLengthPrefix [4]byte
+			if _, err := io.ReadFull(c.conn, rawLengthPrefix[:]); err != nil {
 				return
 			}
 			var lengthPrefix uint32
@@ -230,74 +232,70 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 				continue
 			}
 
-			rawMsgId := [1]byte{}
-			if _, err := c.conn.Read(rawMsgId[:]); err != nil {
+			var rawMsgId [1]byte
+			if _, err := io.ReadFull(c.conn, rawMsgId[:]); err != nil {
 				return
 			}
 			mt := msgType(rawMsgId[0])
 
-			if mt > 9 {
+			contentSz := lengthPrefix - 1
+
+			switch {
+			case mt < haveMsg:
+				switch mt {
+				case chokeMsg:
+					c.setChoked(true)
+				case unchokeMsg:
+					c.setChoked(false)
+				case interestedMsg:
+					c.setInterested(true)
+				case notInterestedMsg:
+					c.setInterested(false)
+				}
+				continue
+			case mt > pieceMsg:
+				if contentSz > 0 {
+					if _, err := io.CopyN(io.Discard, c.conn, int64(contentSz)); err != nil {
+						return
+					}
+					continue
+				}
+			}
+
+			if uint32(len(rawContent)) < contentSz {
+				rawContent = make([]byte, contentSz)
+			}
+			if _, err := io.ReadFull(c.conn, rawContent); err != nil {
 				return
 			}
 
-			var buff bytes.Buffer
-
 			switch mt {
-			case chokeMsg:
-				c.setChoked(true)
-			case unchokeMsg:
-				c.setChoked(false)
-			case interestedMsg:
-				c.setInterested(true)
-			case notInterestedMsg:
-				c.setInterested(false)
 			case haveMsg:
-				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
-					return
-				}
-				data := buff.Bytes()
-
 				var index uint32
-				binary.Decode(data, binary.BigEndian, &index)
+				binary.Decode(rawContent, binary.BigEndian, &index)
 
 				if err := c.b.Mark(index); err != nil {
 					return
 				}
 			case bitfieldMsg:
-				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
-					return
-				}
-				data := buff.Bytes()
-
-				if err := c.b.Overwrite(data); err != nil {
+				if err := c.b.Overwrite(rawContent); err != nil {
 					return
 				}
 			case requestMsg:
-				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
-					return
-				}
-				data := buff.Bytes()
-
 				var index, begin, length uint32
-				binary.Decode(data[:4], binary.BigEndian, &index)
-				binary.Decode(data[4:8], binary.BigEndian, &begin)
-				binary.Decode(data[8:], binary.BigEndian, &length)
+				binary.Decode(rawContent[:4], binary.BigEndian, &index)
+				binary.Decode(rawContent[4:8], binary.BigEndian, &begin)
+				binary.Decode(rawContent[8:], binary.BigEndian, &length)
 
 				go eh.RequestedBlock(c, index, begin, length)
 			case pieceMsg:
-				if _, err := io.CopyN(&buff, c.conn, int64(lengthPrefix)-1); err != nil {
-					return
-				}
-				data := buff.Bytes()
-
 				var index, begin uint32
-				binary.Decode(data[:4], binary.BigEndian, &index)
-				binary.Decode(data[4:8], binary.BigEndian, &begin)
+				binary.Decode(rawContent[:4], binary.BigEndian, &index)
+				binary.Decode(rawContent[4:8], binary.BigEndian, &begin)
 
-				block := data[8:]
+				block := rawContent[8:]
 
 				go eh.ReceivedBlock(c, index, begin, block)
-			default:
 			}
 		}
 	}()
@@ -394,20 +392,8 @@ func Connect(
 		b:             b,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
-	defer cancel()
-	handshakeRet := make(chan error, 1)
-	go func() {
-		handshakeRet <- client.doHandshake(tmeta.InfoHash, pi)
-	}()
-	select {
-	case <-ctx.Done():
-		client.Close()
-		return nil, ErrHandshakeFailed
-	case err := <-handshakeRet:
-		if err != nil {
-			return nil, err
-		}
+	if err := client.doHandshake(tmeta.InfoHash, pi); err != nil {
+		return nil, err
 	}
 
 	client.setChoked(true)

@@ -19,7 +19,7 @@ import (
 const (
 	defaultBlockSz uint32 = 16384
 	maxPeers              = 30
-	awaitTimeout          = 500 * time.Millisecond
+	awaitTimeout          = 2000 * time.Millisecond
 )
 
 type rb struct {
@@ -210,8 +210,8 @@ func (d *downloader) download() error {
 		pIndex := piece.index
 		pLength := piece.length
 
+	retry:
 		var piece []byte
-
 		for bPos := range d.nBlocks {
 			for {
 				pCli := d.findPeerWithPiece(peers, pIndex)
@@ -261,9 +261,8 @@ func (d *downloader) download() error {
 
 		if sha1.Sum(piece) != pHash {
 			fmt.Println("piece hash doesn't match")
+			goto retry
 		}
-
-		// TODO: check piece hash, write if right or try again
 
 		d.sd.AddDownloaded(pLength)
 	}
