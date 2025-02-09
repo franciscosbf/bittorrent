@@ -14,7 +14,6 @@ import (
 	"github.com/franciscosbf/bittorrent/internal/pieces"
 	"github.com/franciscosbf/bittorrent/internal/torrent"
 	"github.com/franciscosbf/bittorrent/internal/tracker"
-	"github.com/paulbellamy/ratecounter"
 )
 
 var (
@@ -23,10 +22,9 @@ var (
 )
 
 const (
-	connTimeout       = 1500 * time.Millisecond
-	handshakeTimeout  = 2 * time.Second
-	heartbeatTimeout  = 2 * time.Minute
-	bandwidthInterval = 1 * time.Second
+	connTimeout      = 1500 * time.Millisecond
+	handshakeTimeout = 1500 * time.Millisecond
+	heartbeatTimeout = 2 * time.Minute
 )
 
 func dialTcpConn(addr string) (net.Conn, error) {
@@ -141,8 +139,6 @@ type Client struct {
 	stopHeartbeat chan struct{}
 	conn          net.Conn
 	b             *pieces.Bitfield
-	downloadRate  *ratecounter.RateCounter
-	uploadRate    *ratecounter.RateCounter
 }
 
 func (c *Client) setChoked(choked bool) {
@@ -163,32 +159,48 @@ func (c *Client) close() {
 }
 
 func (c *Client) doHandshake(ih torrent.InfoHash, pi id.Peer) error {
-	handshakeMsg := buildHandshakeMsg(ih, pi)
-	if _, err := c.conn.Write(handshakeMsg); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+	defer cancel()
+
+	peerId := make(chan id.Peer, 1)
+
+	go func() {
+		handshakeMsg := buildHandshakeMsg(ih, pi)
+		if _, err := c.conn.Write(handshakeMsg); err != nil {
+			return
+		}
+
+		ackSize := len(handshakeMsg) - len(pi.Raw())
+
+		handshakeMsgAck := make([]byte, ackSize)
+		if _, err := io.ReadFull(c.conn, handshakeMsgAck); err != nil {
+			return
+		}
+
+		handshakeMsg = handshakeMsg[:ackSize]
+		if !bytes.Equal(handshakeMsg[:22], handshakeMsgAck[:22]) ||
+			!bytes.Equal(handshakeMsg[30:], handshakeMsgAck[30:]) {
+			return
+		}
+
+		var rawPeerId [20]byte
+		if _, err := io.ReadFull(c.conn, rawPeerId[:]); err != nil {
+			return
+		}
+
+		peerId <- id.Peer(rawPeerId)
+	}()
+
+	select {
+	case pi := <-peerId:
+		c.pi = id.Peer(pi)
+
+		return nil
+	case <-ctx.Done():
+		c.close()
+
 		return ErrHandshakeFailed
 	}
-
-	ackSize := len(handshakeMsg) - len(pi.Raw())
-
-	handshakeMsgAck := make([]byte, ackSize)
-	if _, err := io.ReadFull(c.conn, handshakeMsgAck); err != nil {
-		return ErrHandshakeFailed
-	}
-
-	handshakeMsg = handshakeMsg[:ackSize]
-	if !bytes.Equal(handshakeMsg[:22], handshakeMsgAck[:22]) ||
-		!bytes.Equal(handshakeMsg[30:], handshakeMsgAck[30:]) {
-
-		return ErrHandshakeFailed
-	}
-
-	var peerId [20]byte
-	if _, err := io.ReadFull(c.conn, peerId[:]); err != nil {
-		return ErrHandshakeFailed
-	}
-	c.pi = id.Peer(peerId)
-
-	return nil
 }
 
 func (c *Client) keepBeating() bool {
@@ -291,8 +303,6 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 
 				block := rawContent[8:]
 
-				c.downloadRate.Incr(int64(len(block)))
-
 				go eh.ReceivedBlock(c, index, begin, block)
 			}
 		}
@@ -313,14 +323,6 @@ func (c *Client) Choked() bool {
 
 func (c *Client) Closed() bool {
 	return c.closed.Load()
-}
-
-func (c *Client) DownloadRate() int64 {
-	return c.downloadRate.Rate()
-}
-
-func (c *Client) UploadRate() int64 {
-	return c.uploadRate.Rate()
 }
 
 func (c *Client) SendChoke() bool {
@@ -362,13 +364,7 @@ func (c *Client) SendRequest(index, begin, length uint32) bool {
 func (c *Client) SendPieceBlock(index, begin uint32, block []byte) bool {
 	msg := buildPieceBlockMsg(index, begin, block)
 
-	if sent := c.sendMsg(msg[:]); sent {
-		c.uploadRate.Incr(int64(len(block)))
-
-		return true
-	} else {
-		return false
-	}
+	return c.sendMsg(msg[:])
 }
 
 func (c *Client) Close() {
@@ -398,8 +394,6 @@ func Connect(
 		conn:          conn,
 		stopHeartbeat: make(chan struct{}, 1),
 		b:             b,
-		downloadRate:  ratecounter.NewRateCounter(bandwidthInterval),
-		uploadRate:    ratecounter.NewRateCounter(bandwidthInterval),
 	}
 
 	if err := client.doHandshake(tmeta.InfoHash, pi); err != nil {

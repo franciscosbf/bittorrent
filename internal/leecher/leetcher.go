@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha1"
-	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -37,24 +37,26 @@ type piece struct {
 }
 
 type downloader struct {
-	tmeta            *torrent.Metadata
-	pi               id.Peer
-	blockSz          uint32
-	nBlocks          uint32
-	rbs              chan rb
-	b                *pieces.Bitfield
-	fh               *files.Handler
-	sd               *stats.Download
-	tCli             *tracker.Client
-	outputPath       string
-	pieces           chan *piece
-	peersBatch       *list.List
-	peer             chan *peer.Client
-	withoutPeers     chan struct{}
-	stopPeersManager chan struct{}
-	nextPeersRequest time.Time
-	connectedPeers   map[tracker.PeerAddress]struct{}
-	pendingAddrs     []tracker.PeerAddress
+	tmeta             *torrent.Metadata
+	pi                id.Peer
+	blockSz           uint32
+	nBlocks           uint32
+	rbs               chan rb
+	b                 *pieces.Bitfield
+	fh                *files.Handler
+	sd                *stats.Download
+	tCli              *tracker.Client
+	outputPath        string
+	alerterPeersBatch chan []*peer.Client
+	alertHavePiece    chan uint32
+	stopPiecesAlerter chan struct{}
+	peersBatch        *list.List
+	peer              chan *peer.Client
+	withoutPeers      chan struct{}
+	stopPeersManager  chan struct{}
+	nextPeersRequest  time.Time
+	connectedPeers    map[tracker.PeerAddress]struct{}
+	pendingAddrs      []tracker.PeerAddress
 }
 
 func (d *downloader) receivedBlockEvent(c *peer.Client, index, begin uint32, block []byte) {
@@ -134,7 +136,7 @@ func (d *downloader) requestFirstPeers() error {
 	return nil
 }
 
-func (d *downloader) sortPieces() []*piece {
+func (d *downloader) sortPiecesByRarity() []*piece {
 	nPieces := uint32(len(d.tmeta.Pieces))
 	pieces := make([]*piece, nPieces)
 	for i, hashPiece := range d.tmeta.Pieces {
@@ -157,24 +159,28 @@ func (d *downloader) sortPieces() []*piece {
 	return pieces
 }
 
-func (d *downloader) spreadHavePiece(peers []*peer.Client, index uint32) {
-	for _, pCli := range peers {
-		if pCli.Closed() {
-			continue
+func (d *downloader) startPiecesAlerter() {
+	go func() {
+		peersBatch := []*peer.Client{}
+
+		for {
+			select {
+			case peersBatch = <-d.alerterPeersBatch:
+			case pIndex := <-d.alertHavePiece:
+				for _, pCli := range peersBatch {
+					if pCli.Closed() {
+						continue
+					}
+
+					go func(pCli *peer.Client, pIndex uint32) {
+						pCli.SendHave(pIndex)
+					}(pCli, pIndex)
+				}
+			case <-d.stopPiecesAlerter:
+				return
+			}
 		}
-
-		go func(pCli *peer.Client) { pCli.SendHave(index) }(pCli)
-	}
-}
-
-func (d *downloader) findPeerWithPiece(peers []*peer.Client, index uint32) *peer.Client {
-	for _, pCli := range peers {
-		if !pCli.Closed() && !pCli.Choked() && pCli.HasPiece(index) {
-			return pCli
-		}
-	}
-
-	return nil
+	}()
 }
 
 func (d *downloader) waitForBlock(
@@ -196,12 +202,6 @@ func (d *downloader) waitForBlock(
 		}
 
 		return rb.block, false
-	}
-}
-
-func (d *downloader) closePeers(peers []*peer.Client) {
-	for _, pCli := range peers {
-		pCli.Close()
 	}
 }
 
@@ -247,8 +247,6 @@ func (d *downloader) fetchPeerAddrs() ([]tracker.PeerAddress, error) {
 		d.pendingAddrs = d.pendingAddrs[toAdd:]
 	}
 
-	fmt.Println(newAddrs)
-
 	return newAddrs, nil
 }
 
@@ -261,8 +259,6 @@ func (d *downloader) startPeersFetcher() {
 
 				for e := d.peersBatch.Front(); e != nil; e = e.Next() {
 					pCli := e.Value.(*peer.Client)
-
-					fmt.Println(pCli.Addr(), pCli.Closed(), pCli.Choked())
 
 					if pCli.Closed() {
 						toRemove = append(toRemove, e)
@@ -309,40 +305,60 @@ func (d *downloader) startPeersFetcher() {
 	}()
 }
 
-func (d *downloader) download() error {
-	defer d.fh.Close()
+func (d *downloader) peekPeer() *peer.Client {
+	var pCli *peer.Client
+
+	select {
+	case pCli = <-d.peer:
+	case <-d.withoutPeers:
+		log.Println("ran off peers...")
+	}
+
+	return pCli
+}
+
+func (d *downloader) download(output string) error {
+	defer func() {
+		d.stopPeersManager <- struct{}{}
+		d.stopPiecesAlerter <- struct{}{}
+
+		d.fh.Close()
+	}()
 
 	if err := d.requestFirstPeers(); err != nil {
 		return err
 	}
 
-	fmt.Printf("Got %v peers\n", d.peersBatch.Len())
+	log.Printf("got %v peers, warming up...", len(d.connectedPeers))
 
 	time.Sleep(awaitTimeout)
 
-	pieces := d.sortPieces()
+	pieces := d.sortPiecesByRarity()
 
 	d.startPeersFetcher()
+	d.startPiecesAlerter()
 
 	for _, piece := range pieces {
 		pHash := piece.hash
-		_ = pHash
 		pIndex := piece.index
 		pLength := piece.length
 
-	retry:
+	retryPiece:
 		var pCli *peer.Client
-		select {
-		case pCli = <-d.peer:
-		case <-d.withoutPeers:
-			fmt.Println("without peers")
-			return nil
+
+		for {
+			if pCli = d.peekPeer(); pCli == nil {
+				return nil
+			}
+
+			if pCli.HasPiece(pIndex) {
+				break
+			}
 		}
-		if !pCli.HasPiece(pIndex) {
-			goto retry
-		}
+
 		var piece []byte
 		for bPos := range d.nBlocks {
+		retryBlock:
 			for {
 				bStart := bPos * d.blockSz
 				var bLength uint32
@@ -352,8 +368,14 @@ func (d *downloader) download() error {
 					bLength = d.blockSz
 				}
 				if !pCli.SendRequest(pIndex, bStart, bLength) {
-					fmt.Printf("failed to send request to %v\n", pCli.Addr())
-					goto retry
+					log.Printf("| %v | failed to send request of block (piece %v, start: %v, length: %v)",
+						pCli.Addr(), pIndex, bStart, bLength)
+
+					if pCli = d.peekPeer(); pCli == nil {
+						return nil
+					}
+
+					goto retryBlock
 				}
 
 				var block []byte
@@ -362,41 +384,51 @@ func (d *downloader) download() error {
 					if block, repeat = d.waitForBlock(pCli, pIndex, bStart, bLength); !repeat {
 						break
 					}
-					fmt.Printf("repeating with %v\n", pCli.Addr())
+
+					log.Printf("| %v | retrying block (piece %v, start: %v, length: %v)\n",
+						pCli.Addr(), pIndex, bStart, bLength)
 				}
 				if block != nil {
 					piece = append(piece, block...)
-					fmt.Printf("%v | pIndex: %v, bStart: %v, bLength: %v\n", pCli.Addr(), pIndex, bStart, bLength)
+
+					log.Printf("| %v | got block (piece %v, start: %v, length: %v)\n",
+						pCli.Addr(), pIndex, bStart, bLength)
+
 					break
 				} else {
-					goto retry
+					if pCli = d.peekPeer(); pCli == nil {
+						return nil
+					}
+
+					goto retryBlock
 				}
 			}
 		}
 
-		// TODO: find a way to do this d.spreadHavePiece(peers, pIndex)
-
-		fmt.Printf("got piece %v\n", pIndex)
-
 		if sha1.Sum(piece) != pHash {
-			fmt.Println("piece hash doesn't match")
-			goto retry
+			log.Printf("hash of piece %v doesn't match, retrying", pIndex)
+			goto retryPiece
 		}
 
 		d.sd.AddDownloaded(pLength)
 
 		if err := d.fh.WritePiece(pIndex, piece); err != nil {
-			fmt.Printf("Failed to write piece %v\n", pIndex)
+			log.Printf("failed to write piece %v: %v", pIndex, err)
 			break
 		}
+
+		d.b.Mark(pIndex)
+		d.alertHavePiece <- pIndex
+
+		log.Printf("piece %v has been successfully written", pIndex)
 	}
 
-	d.stopPeersManager <- struct{}{}
+	d.fh.WriteFilesAndClose(output)
 
 	return nil
 }
 
-func Download(file []byte, outputPath string) error {
+func Download(file []byte, output string) error {
 	tmeta, err := torrent.Parse(file)
 	if err != nil {
 		return err
@@ -421,24 +453,27 @@ func Download(file []byte, outputPath string) error {
 	sd := stats.New(tmeta)
 
 	d := &downloader{
-		tmeta:            tmeta,
-		pi:               pi,
-		blockSz:          blockSz,
-		nBlocks:          nBlocks,
-		rbs:              make(chan rb, nBlocks),
-		b:                pieces.NewBitfield(tmeta),
-		fh:               fh,
-		sd:               sd,
-		tCli:             tracker.New(pi, tmeta, sd),
-		outputPath:       outputPath,
-		peer:             make(chan *peer.Client, 1),
-		peersBatch:       list.New(),
-		withoutPeers:     make(chan struct{}, 1),
-		stopPeersManager: make(chan struct{}, 1),
-		nextPeersRequest: time.Now(),
-		connectedPeers:   map[tracker.PeerAddress]struct{}{},
-		pendingAddrs:     []tracker.PeerAddress{},
+		tmeta:             tmeta,
+		pi:                pi,
+		blockSz:           blockSz,
+		nBlocks:           nBlocks,
+		rbs:               make(chan rb, nBlocks),
+		b:                 pieces.NewBitfield(tmeta),
+		fh:                fh,
+		sd:                sd,
+		tCli:              tracker.New(pi, tmeta, sd),
+		outputPath:        output,
+		alerterPeersBatch: make(chan []*peer.Client, maxPeers),
+		alertHavePiece:    make(chan uint32, len(tmeta.Pieces)),
+		stopPiecesAlerter: make(chan struct{}, 1),
+		peer:              make(chan *peer.Client, 1),
+		peersBatch:        list.New(),
+		withoutPeers:      make(chan struct{}, 1),
+		stopPeersManager:  make(chan struct{}, 1),
+		nextPeersRequest:  time.Now(),
+		connectedPeers:    map[tracker.PeerAddress]struct{}{},
+		pendingAddrs:      []tracker.PeerAddress{},
 	}
 
-	return d.download()
+	return d.download(output)
 }
