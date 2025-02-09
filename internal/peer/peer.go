@@ -14,6 +14,7 @@ import (
 	"github.com/franciscosbf/bittorrent/internal/pieces"
 	"github.com/franciscosbf/bittorrent/internal/torrent"
 	"github.com/franciscosbf/bittorrent/internal/tracker"
+	"github.com/paulbellamy/ratecounter"
 )
 
 var (
@@ -22,9 +23,10 @@ var (
 )
 
 const (
-	connTimeout      = 1500 * time.Millisecond
-	handshakeTimeout = 2 * time.Second
-	heartbeatTimeout = 2 * time.Minute
+	connTimeout       = 1500 * time.Millisecond
+	handshakeTimeout  = 2 * time.Second
+	heartbeatTimeout  = 2 * time.Minute
+	bandwidthInterval = 1 * time.Second
 )
 
 func dialTcpConn(addr string) (net.Conn, error) {
@@ -118,7 +120,7 @@ type msgType byte
 const (
 	chokeMsg msgType = iota
 	unchokeMsg
-	interestedMsg
+	interestMsg
 	notInterestedMsg
 	haveMsg
 	bitfieldMsg
@@ -134,16 +136,13 @@ type EventHandlers struct {
 type Client struct {
 	pi            id.Peer
 	addr          tracker.PeerAddress
-	interested    atomic.Bool
 	choked        atomic.Bool
 	closed        atomic.Bool
 	stopHeartbeat chan struct{}
 	conn          net.Conn
 	b             *pieces.Bitfield
-}
-
-func (c *Client) setInterested(interested bool) {
-	c.interested.Store(interested)
+	downloadRate  *ratecounter.RateCounter
+	uploadRate    *ratecounter.RateCounter
 }
 
 func (c *Client) setChoked(choked bool) {
@@ -247,10 +246,7 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 					c.setChoked(true)
 				case unchokeMsg:
 					c.setChoked(false)
-				case interestedMsg:
-					c.setInterested(true)
-				case notInterestedMsg:
-					c.setInterested(false)
+				case interestMsg, notInterestedMsg:
 				}
 				continue
 			case mt > pieceMsg:
@@ -295,6 +291,8 @@ func (c *Client) startMsgsHandler(eh EventHandlers) {
 
 				block := rawContent[8:]
 
+				c.downloadRate.Incr(int64(len(block)))
+
 				go eh.ReceivedBlock(c, index, begin, block)
 			}
 		}
@@ -309,16 +307,20 @@ func (c *Client) Addr() tracker.PeerAddress {
 	return c.addr
 }
 
-func (c *Client) Interested() bool {
-	return c.interested.Load()
-}
-
 func (c *Client) Choked() bool {
 	return c.choked.Load()
 }
 
 func (c *Client) Closed() bool {
 	return c.closed.Load()
+}
+
+func (c *Client) DownloadRate() int64 {
+	return c.downloadRate.Rate()
+}
+
+func (c *Client) UploadRate() int64 {
+	return c.uploadRate.Rate()
 }
 
 func (c *Client) SendChoke() bool {
@@ -360,7 +362,13 @@ func (c *Client) SendRequest(index, begin, length uint32) bool {
 func (c *Client) SendPieceBlock(index, begin uint32, block []byte) bool {
 	msg := buildPieceBlockMsg(index, begin, block)
 
-	return c.sendMsg(msg[:])
+	if sent := c.sendMsg(msg[:]); sent {
+		c.uploadRate.Incr(int64(len(block)))
+
+		return true
+	} else {
+		return false
+	}
 }
 
 func (c *Client) Close() {
@@ -390,6 +398,8 @@ func Connect(
 		conn:          conn,
 		stopHeartbeat: make(chan struct{}, 1),
 		b:             b,
+		downloadRate:  ratecounter.NewRateCounter(bandwidthInterval),
+		uploadRate:    ratecounter.NewRateCounter(bandwidthInterval),
 	}
 
 	if err := client.doHandshake(tmeta.InfoHash, pi); err != nil {

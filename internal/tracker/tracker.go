@@ -29,9 +29,8 @@ func (et ErrTracker) Error() string {
 type Event string
 
 const (
-	Started   Event = "started"
-	Stopped   Event = "stopped"
-	Completed Event = "completed"
+	Started Event = "started"
+	Stopped Event = "stopped"
 )
 
 type PeerAddress string
@@ -42,6 +41,11 @@ func (pa PeerAddress) HostPort() string {
 
 func (pa PeerAddress) String() string {
 	return pa.HostPort()
+}
+
+type Response struct {
+	RetryInterval time.Duration
+	Addrs         []PeerAddress
 }
 
 type Client struct {
@@ -58,7 +62,7 @@ const (
 	requestTimeout        = 4 * time.Second
 )
 
-func (c *Client) RequestPeers(e Event) ([]PeerAddress, error) {
+func (c *Client) RequestPeers(e Event) (*Response, error) {
 	ih := c.ih.Raw()
 	pi := c.pi.Raw()
 	port := strconv.FormatUint(uint64(fakePort), 10)
@@ -87,6 +91,7 @@ func (c *Client) RequestPeers(e Event) ([]PeerAddress, error) {
 
 	var trackerResponse struct {
 		FailureReason string `bencode:"failure reason"`
+		Interval      uint32 `bencode:"interval"`
 		TrackerId     string `bencode:"tracker id"`
 		Peers         string `bencode:"peers"`
 	}
@@ -117,9 +122,14 @@ func (c *Client) RequestPeers(e Event) ([]PeerAddress, error) {
 		addrs = append(addrs, PeerAddress(addr))
 	}
 
+	retryInterval := time.Duration(trackerResponse.Interval) * time.Second
+
 	c.trackerId = trackerResponse.TrackerId
 
-	return addrs, nil
+	return &Response{
+		Addrs:         addrs,
+		RetryInterval: retryInterval,
+	}, nil
 }
 
 func New(

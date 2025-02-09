@@ -7,6 +7,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/imroc/req/v3 v3.49.1
 	github.com/jackpal/bencode-go v1.0.2
+	github.com/paulbellamy/ratecounter v0.2.0
 	golang.org/x/exp v0.0.0-20241215155358-4a5509556b9e
 )
 
